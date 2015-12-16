@@ -106,7 +106,11 @@ module SlackRTMApi
     def get_ws_url
       req   = Net::HTTP.post_form URI(BASE_URL + RTM_START_PATH), token: @token
       body  = JSON.parse req.body
-      URI body['url']
+      if body['ok']
+        URI body['url']
+      else
+        raise ArgumentError.new "Slack error: #{body['error']}"
+      end
     end
 
     def send_log(log)
