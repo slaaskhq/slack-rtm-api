@@ -27,7 +27,7 @@ module SlackRTMApi
       @ping_threshold = ping_threshold
 
       @logger = logger = Logger.new(STDOUT) if @debug
-      @connection_status = :closed # one of [:closed, :opening, :open]
+      @connection_status = :closed # one of [:closed, :connecting, :initializing, :open]
       @event_handlers = {}
       @events_queue = []
       @thread
@@ -161,7 +161,7 @@ module SlackRTMApi
 
     def register_driver_open
       @driver.on :open do
-        @connection_status = :opening
+        @connection_status = :initializing
         @last_activity = Time.new.to_i
         send_log "WebSocket::Driver :open"
         @event_handlers[:open].call if @event_handlers[:open]
