@@ -10,7 +10,6 @@ module SlackRTMApi
   class ApiClient
     VALID_DRIVER_EVENTS = [:open, :close, :message, :error]
     RTM_API_URL = 'https://slack.com/api/rtm.start'
-    IO_SELECT_TIMEOUT   = 0.001
 
     attr_reader :connection_status
 
@@ -19,10 +18,12 @@ module SlackRTMApi
       auto_reconnect: true,
       debug: false,
       ping_threshold: 15,
+      select_timeout: 0.01, # worst case adds 10ms latency to sends
       token: nil
     )
       @auto_reconnect = auto_reconnect
       @debug = debug
+      @select_timeout = select_timeout
       @token = token
       @ping_threshold = ping_threshold
 
@@ -47,11 +48,6 @@ module SlackRTMApi
       @event_handlers[event_type] = event_handler
     end
 
-    def send(event)
-      event[:id] = message_id
-      @events_queue << event.to_json
-    end
-
     def close
       @connection_status = :closed
       return unless @thread
@@ -59,6 +55,13 @@ module SlackRTMApi
       @thread = nil 
       @driver.close 
     end
+
+    def send(message)
+      message[:id] = message_id
+      @events_queue << message.to_json
+    end
+
+    alias_method :<<, :send
 
     def start
       @thread = Thread.new do
@@ -73,7 +76,7 @@ module SlackRTMApi
     private
 
     def check_ws
-      if IO.select([@socket], nil, nil, IO_SELECT_TIMEOUT)
+      if IO.select([@socket], nil, nil, @select_timeout)
         data = @socket.readpartial 4096
         @driver.parse data unless data.nil? || data.empty?
       end
