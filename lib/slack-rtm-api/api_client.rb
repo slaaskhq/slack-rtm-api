@@ -8,98 +8,66 @@ include IO::WaitReadable
 module SlackRTMApi
 
   class ApiClient
-    VALID_DRIVER_EVENTS = [:open, :message, :error]
-    BASE_URL            = 'https://slack.com/api'
-    RTM_START_PATH      = '/rtm.start'
+    VALID_DRIVER_EVENTS = [:open, :close, :message, :error]
+    RTM_API_URL = 'https://slack.com/api/rtm.start'
     IO_SELECT_TIMEOUT   = 0.001
 
-    def initialize(token: nil, ping_threshold: 15, silent: true)
-      @token      = token
-      @ping_threshold = ping_threshold
-      @silent     = silent
+    attr_reader :connection_status
 
-      @logger     = logger = Logger.new(STDOUT) unless silent
-      @connected  = false
-      @ready      = false
+    def initialize(
+      auto_start: true,
+      auto_reconnect: true,
+      debug: false,
+      ping_threshold: 15,
+      token: nil
+    )
+      @auto_reconnect = auto_reconnect
+      @debug = debug
+      @token = token
+      @ping_threshold = ping_threshold
+
+      @logger = logger = Logger.new(STDOUT) if @debug
+      @connection_status = :closed # one of [:closed, :opening, :open]
       @event_handlers = {}
-      @events_queue   = []
+      @events_queue = []
+      @thread
 
       if token
-        @url = get_ws_url
+        @url = get_initial_url
+        start if auto_start
       else
         raise ArgumentError.new 'SlackRTMApi::ApiClient missing token'
       end
     end
 
-    def bind(type, &block)
-      unless VALID_DRIVER_EVENTS.include? type
-        raise ArgumentError.new "The event `#{type}` doesn't exist, available events are: #{VALID_DRIVER_EVENTS}"
+    def bind(event_type: nil, event_handler: nil)
+      unless VALID_DRIVER_EVENTS.include? event_type
+        raise ArgumentError.new "Invalid Event (#{event_type}) valid events are: #{VALID_DRIVER_EVENTS}"
       end
-
-      @event_handlers[type] = block
+      @event_handlers[event_type] = event_handler
     end
 
     def send(event)
-      event[:id] = random_id
+      event[:id] = message_id
       @events_queue << event.to_json
     end
 
-    def init
-      return if @ready
-
-      @socket = OpenSSL::SSL::SSLSocket.new TCPSocket.new(@url.host, 443)
-      @socket.connect
-
-      @driver = WebSocket::Driver.client SlackRTMApi::ClientWrapper.new(@url.to_s, @socket)
-      @last_activity = Time.new.to_i
-
-      @driver.on :open do
-        @connected = true
-        @last_activity = Time.new.to_i
-        send_log "WebSocket::Driver is now connected"
-        @event_handlers[:open].call unless @event_handlers[:open].nil?
-      end
-
-      @driver.on :close do |event|
-        @connected = false
-        send_log "WebSocket::Driver received a close event"
-        @event_handlers[:close].call if @event_handlers[:close]
-        init
-      end
-
-      @driver.on :error do |event|
-        @connected = false
-        @last_activity = Time.new.to_i
-        send_log "WebSocket::Driver received an error"
-        @event_handlers[:error].call unless @event_handlers[:error].nil?
-      end
-
-      @driver.on :message do |event|
-        data = JSON.parse event.data
-        @last_activity = Time.new.to_i
-        send_log "WebSocket::Driver received an event with data: #{data}"
-        if data['type'] == 'reconnect_url'
-          @url = data['url']
-          send_log "SlackRTMApi::ApiClient#@driver.on :message URL Updated #{@url}"
-        else
-          @event_handlers[:message].call data unless @event_handlers[:message].nil?
-        end
-      end
-
-      @driver.start
-      @ready = true
+    def close
+      @connection_status = :closed
+      return unless @thread
+      @thread.kill
+      @thread = nil 
+      @driver.close 
     end
 
     def start
-      t = Thread.new do
-        init
+      @thread = Thread.new do
+        connect_to_slack
         loop do
-          check_ws
-          sleep 0.1
+          check_ws if @connection_status != :closed
         end
       end
-
-      t.abort_on_exception = true
+      @thread.abort_on_exception = true
     end
 
     private
@@ -117,6 +85,17 @@ module SlackRTMApi
       end
     end
 
+    def connect_to_slack
+      return if @connection_status == :open
+      @connection_status = :connecting
+      @socket = OpenSSL::SSL::SSLSocket.new TCPSocket.new(@url.host, 443)
+      @socket.connect
+      @driver = WebSocket::Driver.client SlackRTMApi::ClientWrapper.new(@url.to_s, @socket)
+      register_driver_events
+      @last_activity = Time.now.to_i
+      @driver.start
+    end
+
     def handle_events_queue
       while event = @events_queue.shift
         send_log "WebSocket::Driver send #{event}"
@@ -124,23 +103,73 @@ module SlackRTMApi
       end
     end
 
-    def get_ws_url
-      req   = Net::HTTP.post_form URI(BASE_URL + RTM_START_PATH), token: @token
-      body  = JSON.parse req.body
+    def get_initial_url
+      req = Net::HTTP.post_form URI(RTM_API_URL), token: @token
+      body = JSON.parse req.body
       if body['ok']
         URI body['url']
       else
         raise ArgumentError.new "Slack error: #{body['error']}"
       end
     end
+    
+    def message_id
+      @message_id = 0 unless defined? @message_id
+      @message_id += 1
+    end       
+
+    def register_driver_events 
+      register_driver_open
+      register_driver_close
+      register_driver_error
+      register_driver_message
+    end
+
+    def register_driver_close
+      @driver.on :close do |event|
+        send_log "WebSocket::Driver received a close event"
+        @event_handlers[:close].call if @event_handlers[:close]
+        @connection_status = :closed
+        connect_to_slack if @auto_reconnect
+      end
+    end
+
+    def register_driver_error
+      @driver.on :error do |event|
+        @last_activity = Time.new.to_i
+        send_log "WebSocket::Driver received an error"
+        @event_handlers[:error].call if @event_handlers[:error]
+      end
+    end
+
+    def register_driver_message
+      @driver.on :message do |event|
+        data = JSON.parse event.data
+        @last_activity = Time.new.to_i
+        send_log "WebSocket::Driver received an event with data: #{data}"
+        case data['type']
+        when 'hello'
+          @connection_status = :open
+        when 'reconnect_url'
+          @url = data['url']
+          send_log "SlackRTMApi::ApiClient#@driver.on :message URL Updated #{@url}"
+        else
+          @event_handlers[:message].call data unless @event_handlers[:message].nil?
+        end
+      end
+    end
+
+    def register_driver_open
+      @driver.on :open do
+        @connection_status = :opening
+        @last_activity = Time.new.to_i
+        send_log "WebSocket::Driver :open"
+        @event_handlers[:open].call if @event_handlers[:open]
+      end
+    end
 
     def send_log(log)
-      @logger.info(log) unless @silent
-    end
-
-    def random_id
-      SecureRandom.random_number 9999999
+      @logger.info(log) if @debug
     end
   end
-
 end
