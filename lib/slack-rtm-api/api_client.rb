@@ -55,15 +55,22 @@ module SlackRTMApi
         @event_handlers[:open].call unless @event_handlers[:open].nil?
       end
 
+      @driver.on :close do |event|
+        @connected = false
+        send_log "WebSocket::Driver received a close event"
+        @event_handlers[:close].call if @event_handlers[:close]
+        init
+      end
+
       @driver.on :error do |event|
         @connected = false
-        send_log "WebSocket::Driver recieved an error"
+        send_log "WebSocket::Driver received an error"
         @event_handlers[:error].call unless @event_handlers[:error].nil?
       end
 
       @driver.on :message do |event|
         data = JSON.parse event.data
-        send_log "WebSocket::Driver recieved an event with data: #{data}"
+        send_log "WebSocket::Driver received an event with data: #{data}"
         if data['type'] == 'reconnect_url'
           @url = data['url']
           send_log "SlackRTMApi::ApiClient#@driver.on :message URL Updated #{@url}"
@@ -73,8 +80,11 @@ module SlackRTMApi
       end
 
       @driver.start
-
       @ready = true
+    end
+
+    def init_connection
+
     end
 
     def check_ws
