@@ -11,7 +11,7 @@ module SlackRTMApi
     BASE_URL            = 'https://slack.com/api'
     RTM_START_PATH      = '/rtm.start'
 
-    def initialize(token: token, silent: true, start: true)
+    def initialize(token: nil, silent: true)
       @token      = token
       @silent     = silent
 
@@ -21,12 +21,10 @@ module SlackRTMApi
       @event_handlers = {}
       @events_queue   = []
 
-      @url = get_ws_url
-
-      unless token
-        raise ArgumentError.new 'You should pass a valid RTM Websocket url'
+      if token
+        @url = get_ws_url
       else
-        start if start
+        raise ArgumentError.new 'SlackRTMApi::ApiClient missing token'
       end
     end
 
