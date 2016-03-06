@@ -1,4 +1,5 @@
 require 'json'
+require 'net/http'
 require 'socket'
 require 'websocket/driver'
 require 'logger'
