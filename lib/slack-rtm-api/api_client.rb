@@ -64,7 +64,12 @@ module SlackRTMApi
       @driver.on :message do |event|
         data = JSON.parse event.data
         send_log "WebSocket::Driver recieved an event with data: #{data}"
-        @event_handlers[:message].call data unless @event_handlers[:message].nil?
+        if data['type'] == 'reconnect_url'
+          @url = data['url']
+          send_log "SlackRTMApi::ApiClient#@driver.on :message URL Updated #{@url}"
+        else
+          @event_handlers[:message].call data unless @event_handlers[:message].nil?
+        end
       end
 
       @driver.start
@@ -74,27 +79,15 @@ module SlackRTMApi
 
     def check_ws
       data = @socket.readpartial 4096
-
-      return if data.nil? or data.empty?
-
-      @driver.parse data
-
+      @driver.parse data unless data.nil? || data.empty?
       handle_events_queue
-    end
-
-    def handle_events_queue
-      @events_queue.each do |event|
-        send_log "WebSocket::Driver send #{event}"
-        @driver.text event
-      end
-
-      @events_queue.clear
     end
 
     def start
       t = Thread.new do
         init
         loop do
+          # TODO: track time of last send/receiver to manage slack keepalives
           check_ws
         end
       end
@@ -103,6 +96,13 @@ module SlackRTMApi
     end
 
     private
+
+    def handle_events_queue
+      while event = @events_queue.shift
+        send_log "WebSocket::Driver send #{event}"
+        @driver.text event
+      end
+    end
 
     def get_ws_url
       req   = Net::HTTP.post_form URI(BASE_URL + RTM_START_PATH), token: @token
