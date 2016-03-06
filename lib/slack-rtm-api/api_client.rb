@@ -11,21 +11,23 @@ module SlackRTMApi
     BASE_URL            = 'https://slack.com/api'
     RTM_START_PATH      = '/rtm.start'
 
-    def initialize(token, silent = true)
-      @logger     = logger = Logger.new(STDOUT) unless silent
+    def initialize(token: token, silent: true, start: true)
       @token      = token
       @silent     = silent
-      @ready      = false
+
+      @logger     = logger = Logger.new(STDOUT) unless silent
       @connected  = false
-
-      if token.nil?
-        raise ArgumentError.new "You should pass a valid RTM Websocket url"
-      else
-        @url = get_ws_url
-      end
-
+      @ready      = false
       @event_handlers = {}
       @events_queue   = []
+
+      @url = get_ws_url
+
+      unless token
+        raise ArgumentError.new 'You should pass a valid RTM Websocket url'
+      else
+        start if start
+      end
     end
 
     def bind(type, &block)
@@ -51,6 +53,7 @@ module SlackRTMApi
 
       @driver.on :open do
         @connected = true
+        @last_activity = Time.new
         send_log "WebSocket::Driver is now connected"
         @event_handlers[:open].call unless @event_handlers[:open].nil?
       end
@@ -64,12 +67,14 @@ module SlackRTMApi
 
       @driver.on :error do |event|
         @connected = false
+        @last_activity = Time.new
         send_log "WebSocket::Driver received an error"
         @event_handlers[:error].call unless @event_handlers[:error].nil?
       end
 
       @driver.on :message do |event|
         data = JSON.parse event.data
+        @last_activity = Time.new
         send_log "WebSocket::Driver received an event with data: #{data}"
         if data['type'] == 'reconnect_url'
           @url = data['url']
@@ -83,29 +88,22 @@ module SlackRTMApi
       @ready = true
     end
 
-    def init_connection
-
-    end
-
-    def check_ws
-      data = @socket.readpartial 4096
-      @driver.parse data unless data.nil? || data.empty?
-      handle_events_queue
-    end
-
     def start
       t = Thread.new do
         init
-        loop do
-          # TODO: track time of last send/receiver to manage slack keepalives
-          check_ws
-        end
+        loop { check_ws }
       end
 
       t.abort_on_exception = true
     end
 
     private
+
+    def check_ws
+      data = @socket.readpartial 4096
+      @driver.parse data unless data.nil? || data.empty?
+      handle_events_queue
+    end
 
     def handle_events_queue
       while event = @events_queue.shift
