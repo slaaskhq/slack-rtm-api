@@ -18,6 +18,7 @@ module SlackRTMApi
       auto_start: true,
       auto_reconnect: true,
       debug: false,
+      open_wait_timeout: 15,
       ping_threshold: 15,
       select_timeout: 0.01, # worst case adds 10ms latency to sends
       token: nil
@@ -32,11 +33,12 @@ module SlackRTMApi
       @connection_status = :closed # one of [:closed, :connecting, :initializing, :open]
       @event_handlers = {}
       @events_queue = []
-      @thread
+      @thread = nil
 
       if token
         @url = get_initial_url
         start if auto_start
+        wait_for_open(open_wait_timeout: open_wait_timeout) if open_wait_timeout
       else
         raise ArgumentError.new 'SlackRTMApi::ApiClient missing token'
       end
@@ -175,5 +177,14 @@ module SlackRTMApi
     def send_log(log)
       @logger.info(log) if @debug
     end
+
+    def wait_for_open(open_wait_timeout: open_wait_timeout)
+      start_time = Time.new.to_i
+      while @connection_status != :open && Time.new.to_i - start_time < open_wait_timeout do
+        sleep @select_timeout
+      end
+      raise StandardError, "Timed out waiting for open" unless @connection_status == :open
+    end
+
   end
 end
