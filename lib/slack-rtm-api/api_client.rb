@@ -11,7 +11,7 @@ module SlackRTMApi
     VALID_DRIVER_EVENTS = [:open, :close, :message, :error]
     RTM_API_URL = 'https://slack.com/api/rtm.start'
 
-    attr_accessor :auto_reconnect, :debug, :ping_threshhold, :select_timeout, :token
+    attr_accessor :auto_reconnect, :debug, :ping_threshold, :select_timeout, :token
     attr_reader :connection_status
 
     def initialize(
